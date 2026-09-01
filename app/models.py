@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -93,6 +94,9 @@ class Resume(Base):
     label: Mapped[str] = mapped_column(String(200), default="My resume")
     filename: Mapped[str] = mapped_column(String(300), default="")
     stored_path: Mapped[str] = mapped_column(String(600), default="")
+    # On a serverless host the filesystem is wiped between requests, so the
+    # uploaded file itself is kept here instead of on disk.
+    file_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     raw_text: Mapped[str] = mapped_column(Text, default="")
     parsed: Mapped[dict] = mapped_column(JSON, default=dict)
     skills: Mapped[list] = mapped_column(JSON, default=list)
@@ -176,6 +180,11 @@ class Application(Base):
     resume_docx: Mapped[str] = mapped_column(String(600), default="")
     resume_pdf: Mapped[str] = mapped_column(String(600), default="")
     screenshot: Mapped[str] = mapped_column(String(600), default="")
+    # Same reason: generated documents have nowhere durable to live on a
+    # serverless host, so the bytes are stored alongside the record.
+    resume_docx_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    resume_pdf_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    cover_pdf_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
     filled_fields: Mapped[dict] = mapped_column(JSON, default=dict)
     unfilled_fields: Mapped[list] = mapped_column(JSON, default=list)

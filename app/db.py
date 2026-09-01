@@ -6,19 +6,47 @@ from collections.abc import Iterator
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from .config import DB_PATH
+from .config import DATABASE_URL, DB_PATH
 
 log = logging.getLogger("jobpilot.db")
 
-engine = create_engine(
-    f"sqlite:///{DB_PATH}",
-    connect_args={"check_same_thread": False, "timeout": 30},
-    future=True,
-)
+
+def _build_engine():
+    """SQLite locally, Postgres when DATABASE_URL is set."""
+    if not DATABASE_URL:
+        return create_engine(
+            f"sqlite:///{DB_PATH}",
+            connect_args={"check_same_thread": False, "timeout": 30},
+            future=True,
+        ), True
+
+    url = DATABASE_URL
+    # Hosts hand out postgres:// and libpq-style URLs; SQLAlchemy 2 wants an
+    # explicit driver, and psycopg3 is the one that installs cleanly on Vercel.
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    return create_engine(
+        url,
+        # Serverless invocations are short-lived and pooling across them leaks
+        # connections; recycle aggressively and check liveness before use.
+        pool_pre_ping=True,
+        pool_recycle=280,
+        pool_size=2,
+        max_overflow=3,
+        future=True,
+    ), False
+
+
+engine, IS_SQLITE = _build_engine()
 
 
 @event.listens_for(engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _record):
+    if not IS_SQLITE:
+        return
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA foreign_keys=ON")
@@ -60,10 +88,15 @@ def _add_missing_columns() -> None:
                 if column.name in present or column.primary_key:
                     continue
                 col_type = column.type.compile(engine.dialect)
-                conn.execute(
-                    text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}')
-                )
-                log.info("added column %s.%s", table.name, column.name)
+                try:
+                    conn.execute(
+                        text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}')
+                    )
+                    log.info("added column %s.%s", table.name, column.name)
+                except Exception as exc:  # noqa: BLE001
+                    # Never let a migration guess take the whole app down; the
+                    # dialects disagree on some type spellings.
+                    log.warning("could not add %s.%s: %s", table.name, column.name, exc)
 
 
 def init_db() -> None:

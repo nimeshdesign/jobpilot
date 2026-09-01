@@ -11,7 +11,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from ..config import GENERATED_DIR
+from ..config import GENERATED_DIR, STORE_FILES_IN_DB
 
 
 # ReportLab's built-in fonts render U+2022 ("•") as a glyph that text
@@ -305,21 +305,42 @@ def purge_previous(application_id: int, keep_prefix: str) -> int:
     return removed
 
 
-def generate_all(tailored, resume, profile, job, application_id: int) -> dict[str, str]:
-    """Write resume DOCX + PDF and (optionally) a cover-letter PDF."""
+def _read_and_maybe_remove(path: Path) -> bytes:
+    """Read a generated file, and on a serverless host drop it afterwards.
+
+    There the filesystem is a scratch space that vanishes between requests, so
+    the bytes have to be carried back to the caller and stored in the database.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return b""
+    if STORE_FILES_IN_DB:
+        path.unlink(missing_ok=True)
+    return data
+
+
+def generate_all(tailored, resume, profile, job, application_id: int) -> dict:
+    """Write resume DOCX + PDF and (optionally) a cover-letter PDF.
+
+    Returns paths, plus the raw bytes under *_bytes keys so a hosted instance
+    can persist them where they will survive the next request.
+    """
     base = output_basename(job, application_id)
     purge_previous(application_id, base)
-    out: dict[str, str] = {}
+    out: dict = {}
 
     docx_path = GENERATED_DIR / f"{base}-resume.docx"
     pdf_path = GENERATED_DIR / f"{base}-resume.pdf"
 
     write_docx(tailored, resume, profile, docx_path)
     out["docx"] = str(docx_path)
+    out["docx_bytes"] = _read_and_maybe_remove(docx_path)
 
     try:
         write_pdf(tailored, resume, profile, pdf_path)
         out["pdf"] = str(pdf_path)
+        out["pdf_bytes"] = _read_and_maybe_remove(pdf_path)
     except Exception as exc:  # noqa: BLE001 - a missing PDF must not block applying
         out["pdf_error"] = f"{type(exc).__name__}: {exc}"
 
@@ -330,6 +351,7 @@ def generate_all(tailored, resume, profile, job, application_id: int) -> dict[st
                 tailored.cover_letter, tailored, resume, profile, job, letter_path
             )
             out["cover_letter_pdf"] = str(letter_path)
+            out["cover_bytes"] = _read_and_maybe_remove(letter_path)
         except Exception as exc:  # noqa: BLE001
             out["cover_letter_error"] = f"{type(exc).__name__}: {exc}"
 

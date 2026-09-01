@@ -28,6 +28,29 @@ DB_PATH = Path(os.getenv("JOBPILOT_DB", "")).expanduser() if os.getenv("JOBPILOT
     else DATA_DIR / "jobpilot.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+# --- hosted deployment ------------------------------------------------------
+# Set DATABASE_URL (Vercel Postgres / Neon / Supabase all provide one) to run
+# against Postgres instead of the local SQLite file. Everything else in the app
+# is written against SQLAlchemy, so nothing else changes.
+DATABASE_URL = (
+    os.getenv("JOBPILOT_DATABASE_URL")
+    or os.getenv("POSTGRES_URL")
+    or os.getenv("DATABASE_URL")
+    or ""
+).strip()
+
+# On a serverless host the filesystem is wiped between requests, so uploaded
+# resumes and generated documents have to live in the database instead of on
+# disk. Forced on automatically when there is no writable local disk.
+SERVERLESS = os.getenv("VERCEL") == "1" or os.getenv("JOBPILOT_SERVERLESS") == "1"
+STORE_FILES_IN_DB = SERVERLESS or os.getenv("JOBPILOT_FILES_IN_DB") == "1"
+
+# Password for a hosted instance. Without it the app refuses to serve anything
+# over a non-local connection -- this database holds your resume, contact
+# details and application history, and must never be world-readable.
+APP_PASSWORD = os.getenv("JOBPILOT_PASSWORD", "").strip()
+SECRET_KEY = os.getenv("JOBPILOT_SECRET_KEY", "").strip()
+
 for _d in (DATA_DIR, RESUME_DIR, GENERATED_DIR, SCREENSHOT_DIR, BROWSER_PROFILE_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 

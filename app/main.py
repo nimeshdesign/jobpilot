@@ -24,12 +24,15 @@ for _stream in (sys.stdout, sys.stderr):
     except (AttributeError, ValueError):  # already wrapped, or not a text stream
         pass
 
-from fastapi import FastAPI
+import asyncio
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import HOST, PORT, WEB_DIR
+from . import auth
+from .config import HOST, PORT, SERVERLESS, WEB_DIR
 from .db import SessionLocal, init_db
 from .models import Profile
 from .routers.api import router as api_router
@@ -45,6 +48,9 @@ log = logging.getLogger("jobpilot")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Refuses to start a hosted instance with no password rather than exposing
+    # your resume and application history to anyone with the URL.
+    auth.startup_check()
     init_db()
     with SessionLocal() as db:
         profile = db.get(Profile, 1)
@@ -75,7 +81,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.middleware("http")(auth.middleware)
 app.include_router(api_router)
+
+
+@app.get("/login", include_in_schema=False)
+def login_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "login.html")
+
+
+@app.post("/api/login", include_in_schema=False)
+async def do_login(request: Request) -> JSONResponse:
+    body = await request.json()
+    if not auth.check_password(str(body.get("password", ""))):
+        # Deliberately vague, and slow enough that guessing is unattractive.
+        await asyncio.sleep(1.0)
+        return JSONResponse({"detail": "Wrong password"}, status_code=401)
+    response = JSONResponse({"ok": True})
+    auth.issue(response)
+    return response
+
+
+@app.post("/api/logout", include_in_schema=False)
+def do_logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    auth.clear(response)
+    return response
 
 
 @app.get("/", include_in_schema=False)

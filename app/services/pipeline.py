@@ -310,6 +310,11 @@ def prepare_application(db: Session, application: Application) -> Application:
 
     application.resume_docx = paths.get("docx", "")
     application.resume_pdf = paths.get("pdf", "")
+    # Hosted instances keep the documents in the row; locally these stay None
+    # and the files on disk are used.
+    application.resume_docx_bytes = paths.get("docx_bytes") or None
+    application.resume_pdf_bytes = paths.get("pdf_bytes") or None
+    application.cover_pdf_bytes = paths.get("cover_bytes") or None
     application.ats = application.ats or ""
     # Regenerating documents must not rewind the application's progress. It was
     # unconditionally setting "ready", which erased "needs_review" (form already

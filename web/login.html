@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JobPilot — sign in</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="panel login-card" id="login-form">
+      <h1>🎯 JobPilot</h1>
+      <p class="hint">This instance holds your resume, contact details and
+        application history. Sign in to continue.</p>
+      <label>Password
+        <input type="password" id="password" autocomplete="current-password" autofocus>
+      </label>
+      <div id="login-error"></div>
+      <button class="primary" type="submit" style="width:100%;margin-top:12px">Sign in</button>
+    </form>
+  </div>
+  <script>
+    document.getElementById('login-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const box = document.getElementById('login-error');
+      box.innerHTML = '';
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value }),
+      });
+      if (res.ok) { window.location = '/'; return; }
+      const data = await res.json().catch(() => ({}));
+      box.innerHTML = '<div class="callout warn">'
+        + (data.detail || 'Wrong password') + '</div>';
+      document.getElementById('password').select();
+    };
+  </script>
+</body>
+</html>

@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..config import DATA_DIR, RESUME_DIR
+from ..config import DATA_DIR, RESUME_DIR, SERVERLESS, STORE_FILES_IN_DB
 from ..db import get_db
 from ..models import Application, Job, Match, Profile, Resume, RunLog, utcnow
 from ..services import llm, pipeline, resume_parser
@@ -72,6 +72,7 @@ def status(db: Session = Depends(get_db)) -> dict:
         "counts": counts,
         "llm": llm.describe(),
         "playwright": {"available": playwright_ok, "message": playwright_msg},
+        "hosted": SERVERLESS,
         "worker": worker.state,
         "default_resume": {"id": resume.id, "label": resume.label} if resume else None,
         "applied_last_24h": pipeline.applications_today(db),
@@ -255,7 +256,8 @@ async def upload_resume(
     resume = Resume(
         label=Path(safe_name).stem[:180],
         filename=safe_name,
-        stored_path=str(destination),
+        stored_path="" if STORE_FILES_IN_DB else str(destination),
+        file_bytes=destination.read_bytes() if STORE_FILES_IN_DB else None,
         raw_text=raw_text,
         parsed=parsed,
         skills=parsed.get("skills", []),
@@ -304,6 +306,21 @@ def reparse_resume(resume_id: int, db: Session = Depends(get_db)) -> dict:
             resume.raw_text = resume_parser.extract_text(source)
         except Exception as exc:  # noqa: BLE001 - fall back to the stored text
             log.warning("re-extract failed for resume %s: %s", resume_id, exc)
+    elif resume.file_bytes:
+        # Hosted instance: the original upload lives in the row, so write it to
+        # the scratch disk just long enough to re-read it.
+        import tempfile
+
+        suffix = Path(resume.filename or "resume.pdf").suffix or ".pdf"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(resume.file_bytes)
+            tmp_path = Path(tmp.name)
+        try:
+            resume.raw_text = resume_parser.extract_text(tmp_path)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("re-extract from stored bytes failed: %s", exc)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     if not (resume.raw_text or "").strip():
         raise HTTPException(400, "No resume text stored to re-parse")
@@ -753,6 +770,17 @@ class ApplyRunRequest(BaseModel):
 
 @router.post("/apply/start")
 def start_apply(payload: ApplyRunRequest, db: Session = Depends(get_db)) -> dict:
+    if SERVERLESS:
+        # Chromium is ~430 MB against a 250 MB function limit, and a function
+        # cannot stay alive for a multi-minute run. This is a hard platform
+        # limit, not something a setting can switch on.
+        raise HTTPException(
+            400,
+            "Form autofill cannot run on a hosted instance: it drives a real "
+            "browser, which does not fit in a serverless function. Everything "
+            "else works here — use this instance to find, score and tailor, "
+            "then run JobPilot locally to fill the forms.",
+        )
     ids = payload.application_ids or pending_application_ids(db, payload.limit)
     if not ids:
         raise HTTPException(400, "Nothing queued. Queue some matches first.")
@@ -781,6 +809,23 @@ def download(application_id: int, kind: str, db: Session = Depends(get_db)):
     application = db.get(Application, application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
+
+    # A hosted instance has no durable filesystem, so the bytes live in the
+    # row. Prefer those; fall back to the path for a local install.
+    blobs = {
+        "docx": (application.resume_docx_bytes,
+                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                 "resume.docx"),
+        "pdf": (application.resume_pdf_bytes, "application/pdf", "resume.pdf"),
+        "cover": (application.cover_pdf_bytes, "application/pdf", "cover-letter.pdf"),
+    }
+    blob, media_type, default_name = blobs.get(kind, (None, "", ""))
+    if blob:
+        return Response(
+            content=blob,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{default_name}"'},
+        )
 
     paths = {
         "docx": application.resume_docx,

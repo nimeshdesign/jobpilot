@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JobPilot — local job application automation</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body>
+
+<div class="offline-banner" id="offline-banner" hidden>
+  <strong>Lost connection to JobPilot.</strong>
+  The server has stopped or is restarting — check the terminal window running it.
+  This page will recover on its own once it is back.
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🎯</span>
+    <div>
+      <h1>JobPilot</h1>
+      <p class="tagline">Runs entirely on your machine · nothing is uploaded or tracked</p>
+    </div>
+  </div>
+  <div class="topbar-status" id="topbar-status"></div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="dashboard" class="active">Dashboard</button>
+  <button data-tab="resume">Resume</button>
+  <button data-tab="profile">Profile</button>
+  <button data-tab="jobs">Jobs &amp; Matches</button>
+  <button data-tab="applications">Applications</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+
+<main>
+
+  <!-- ================= DASHBOARD ================= -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="stat-grid" id="stat-grid"></div>
+
+    <div class="panel">
+      <h2>Run the pipeline</h2>
+      <p class="hint">Fetch → score → tailor → apply. Each step is separate so you stay in control.</p>
+      <div class="step-row">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div>
+            <strong>Find jobs</strong>
+            <p>Pull fresh postings from every enabled board and score them against your resume.</p>
+            <div class="inline">
+              <input type="text" id="fetch-query" placeholder="optional keyword, e.g. python">
+              <button class="primary" id="btn-fetch">Fetch &amp; score jobs</button>
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div>
+            <strong>Queue the best matches</strong>
+            <p>Takes your top-scoring jobs above the match threshold and prepares them.</p>
+            <div class="inline">
+              <input type="number" id="queue-limit" value="10" min="1" max="50">
+              <button id="btn-queue">Queue top matches</button>
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">3</span>
+          <div>
+            <strong>Apply</strong>
+            <p>Tailors a resume per job, then drives the browser through each application form.</p>
+            <div class="inline">
+              <label class="checkbox danger-check">
+                <input type="checkbox" id="run-auto-submit">
+                <span>Auto-submit (skip review)</span>
+              </label>
+              <button class="primary" id="btn-apply">Start applying</button>
+              <button class="ghost" id="btn-stop" hidden>Stop</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <h2>Live run <span class="pill" id="worker-pill">idle</span></h2>
+        <div id="worker-current" class="current-job"></div>
+        <div class="progress-wrap"><div class="progress" id="worker-progress"></div></div>
+        <pre class="console" id="worker-log">No run yet.</pre>
+      </div>
+      <div class="panel">
+        <h2>Activity</h2>
+        <div id="runs-list" class="runs"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RESUME ================= -->
+  <section id="tab-resume" class="tab">
+    <div class="panel">
+      <h2>Your resume</h2>
+      <p class="hint">PDF, DOCX or TXT. This is the source of truth — tailoring only ever
+        re-angles what is already in here, it never invents experience.</p>
+      <div class="dropzone" id="dropzone">
+        <input type="file" id="resume-file" accept=".pdf,.docx,.doc,.txt,.md" hidden>
+        <p><strong>Drop your resume here</strong> or <button class="link" id="btn-browse">browse</button></p>
+        <p class="hint" id="upload-status"></p>
+      </div>
+      <div id="resume-list" class="resume-list"></div>
+    </div>
+    <div class="panel" id="resume-detail-panel" hidden>
+      <h2>What JobPilot read from it</h2>
+      <div id="resume-detail"></div>
+    </div>
+  </section>
+
+  <!-- ================= PROFILE ================= -->
+  <section id="tab-profile" class="tab">
+    <form class="panel" id="profile-form">
+      <h2>Identity <span class="hint-inline">used to fill application forms</span></h2>
+      <div class="field-grid">
+        <label>Full name<input name="full_name" type="text"></label>
+        <label>Email<input name="email" type="email"></label>
+        <label>Phone<input name="phone" type="tel"></label>
+        <label>City<input name="city" type="text"></label>
+        <label>Country<input name="country" type="text"></label>
+        <label>Pronouns <span class="opt">optional</span><input name="pronouns" type="text"></label>
+        <label>LinkedIn<input name="linkedin" type="url"></label>
+        <label>GitHub<input name="github" type="url"></label>
+        <label>Portfolio / website<input name="portfolio" type="url"></label>
+      </div>
+
+      <h2>Work authorisation</h2>
+      <p class="hint">These answers get typed into the "are you authorised to work / do you need
+        sponsorship" questions that nearly every ATS asks.</p>
+      <div class="field-grid">
+        <label>Current visa / work status<input name="current_visa_status" type="text"
+          placeholder="e.g. Indian citizen, no current work visa"></label>
+        <label>Notice period<input name="notice_period" type="text" placeholder="e.g. 30 days"></label>
+        <label>Years of experience<input name="years_experience" type="number" step="0.5" min="0"></label>
+        <label>Expected salary <span class="opt">set per country in Settings</span>
+          <input type="text" id="salary-hint-readonly" disabled
+                 placeholder="resolved per job from the country"></label>
+        <label class="checkbox"><input name="needs_sponsorship" type="checkbox">
+          <span>I need visa sponsorship</span></label>
+        <label class="checkbox"><input name="willing_to_relocate" type="checkbox">
+          <span>I am willing to relocate</span></label>
+      </div>
+
+      <h2>What you are looking for</h2>
+      <div class="field-grid">
+        <label>Target job titles <span class="opt">comma separated</span>
+          <input name="target_titles" type="text" placeholder="Software Engineer, Backend Developer"></label>
+        <label>Must-have keywords <span class="opt">comma separated</span>
+          <input name="must_have_keywords" type="text" placeholder="python, aws"></label>
+        <label>Exclude keywords <span class="opt">kills the match outright</span>
+          <input name="exclude_keywords" type="text" placeholder="unpaid, commission only, clearance"></label>
+        <label>Preferred countries <span class="opt">comma separated</span>
+          <input name="preferred_countries" type="text" placeholder="Germany, Netherlands, Canada"></label>
+        <label>Minimum match score to auto-queue
+          <input name="min_match_score" type="number" min="0" max="100" step="1"></label>
+        <label class="checkbox"><input name="remote_only" type="checkbox">
+          <span>Prefer remote roles</span></label>
+        <label class="checkbox"><input name="visa_only" type="checkbox">
+          <span>Only jobs that sponsor visas or hire globally</span></label>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary" type="submit">Save profile</button>
+        <span class="save-note" id="profile-saved"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- ================= JOBS ================= -->
+  <section id="tab-jobs" class="tab">
+    <div class="panel filters">
+      <input type="search" id="job-search" placeholder="Search title, company or description…">
+      <select id="filter-visa">
+        <option value="">Visa: any</option>
+        <option value="sponsor_or_global">Any visa-friendly signal</option>
+        <option value="yes">Posting promises sponsorship</option>
+        <option value="likely">Employer likely sponsors</option>
+        <option value="global">Hires globally (EOR)</option>
+        <option value="unknown">Not stated</option>
+        <option value="no">Explicitly none</option>
+      </select>
+      <select id="filter-remote">
+        <option value="">Remote: any</option>
+        <option value="true">Remote only</option>
+        <option value="false">On-site / hybrid</option>
+      </select>
+      <select id="filter-source"><option value="">Source: all</option></select>
+      <label class="inline-num">Min score
+        <input type="number" id="filter-score" min="0" max="100" step="5" value="0">
+      </label>
+      <select id="filter-sort">
+        <option value="score">Sort: best match</option>
+        <option value="recent">Sort: newest</option>
+        <option value="company">Sort: company</option>
+      </select>
+      <button id="btn-refresh-jobs">Refresh</button>
+    </div>
+    <div id="jobs-count" class="hint"></div>
+    <div id="jobs-list" class="job-list"></div>
+    <div class="center"><button id="btn-more-jobs" hidden>Load more</button></div>
+  </section>
+
+  <!-- ================= APPLICATIONS ================= -->
+  <section id="tab-applications" class="tab">
+    <div class="panel" id="tracker-panel">
+      <h2>Application tracker</h2>
+      <p class="hint">What happened after you applied. Update the outcome as employers
+        reply — the rates below only mean something once you keep it current.</p>
+      <div class="tracker-rates" id="tracker-rates"></div>
+      <div class="funnel" id="tracker-funnel"></div>
+    </div>
+
+    <div class="panel filters">
+      <select id="filter-app-status">
+        <option value="">All automation statuses</option>
+        <option value="queued">Queued</option>
+        <option value="ready">Ready to apply</option>
+        <option value="needs_review">Needs your review</option>
+        <option value="submitted">Submitted</option>
+        <option value="failed">Failed</option>
+      </select>
+      <select id="filter-app-outcome">
+        <option value="">All outcomes</option>
+        <option value="follow_up">⚑ Needs a follow-up</option>
+      </select>
+      <button id="btn-refresh-apps">Refresh</button>
+    </div>
+    <div id="apps-list" class="app-list"></div>
+  </section>
+
+  <!-- ================= SETTINGS ================= -->
+  <section id="tab-settings" class="tab">
+    <form class="panel" id="settings-form">
+      <h2>Automation behaviour</h2>
+      <div class="callout warn">
+        <strong>About auto-submit.</strong> Leave it off and JobPilot fills every field, screenshots
+        the finished form and stops so you can check it before submitting. Turning it on submits
+        without review — faster, but a wrong answer to a screening question goes in permanently, and
+        most job boards' terms do not allow automated submission. Your call, your account.
+      </div>
+      <div class="field-grid">
+        <label class="checkbox"><input name="auto_submit" type="checkbox">
+          <span>Auto-submit applications by default</span></label>
+        <label class="checkbox"><input name="headless" type="checkbox">
+          <span>Headless browser (hide the window)</span></label>
+        <label class="checkbox"><input name="generate_cover_letter" type="checkbox">
+          <span>Generate a cover letter per application</span></label>
+        <label class="checkbox"><input name="use_llm" type="checkbox">
+          <span>Use AI tailoring when an API key is set</span></label>
+        <label>Seconds between applications
+          <input name="apply_delay_seconds" type="number" min="5" max="600"></label>
+        <label>Daily submission limit
+          <input name="daily_apply_limit" type="number" min="1" max="200"></label>
+      </div>
+
+      <h2>Job sources</h2>
+      <div id="sources-list" class="sources"></div>
+
+      <h2>Company career boards</h2>
+      <p class="hint">Greenhouse and Lever are per-company. These are where visa-sponsoring
+        employers actually post, so this list matters more than any other setting. The token is
+        the company name in the board URL &mdash; <code>boards.greenhouse.io/<b>gitlab</b></code>
+        or <code>jobs.lever.co/<b>aircall</b></code>. One per line, or comma separated.</p>
+      <div class="field-grid">
+        <label>Greenhouse boards
+          <textarea name="greenhouse_boards" rows="6" placeholder="gitlab&#10;monzo&#10;canva"></textarea></label>
+        <label>Lever boards
+          <textarea name="lever_boards" rows="6" placeholder="aircall&#10;qonto"></textarea></label>
+      </div>
+
+      <h2>Salary expectations by country</h2>
+      <p class="hint">The same role is priced differently in Berlin, London and Toronto, so the
+        figure typed into "expected salary" is chosen from the country of each posting and scaled
+        to your experience. <strong>These are rough starting estimates, not market data</strong>
+        &mdash; check them against levels.fyi or Glassdoor and override any that look wrong.
+        Blank means use the built-in estimate.</p>
+      <div id="salary-band" class="hint"></div>
+      <div id="salary-table" class="salary-grid"></div>
+      <label style="margin-top:12px">Fallback for countries not listed above
+        <input name="desired_salary" type="text" placeholder="e.g. $70,000 - $90,000"></label>
+
+      <h2>Standard answers</h2>
+      <p class="hint">When a form field's label contains the phrase on the left, JobPilot types the
+        answer on the right. Use it for the recurring questions your field always asks.</p>
+      <div id="custom-answers"></div>
+      <button type="button" class="ghost" id="btn-add-answer">+ Add answer</button>
+
+      <div class="form-actions">
+        <button class="primary" type="submit">Save settings</button>
+        <span class="save-note" id="settings-saved"></span>
+      </div>
+    </form>
+
+    <div class="panel">
+      <h2>System</h2>
+      <div id="system-info"></div>
+      <div class="form-actions">
+        <button class="ghost" id="btn-test-ai">Test AI provider</button>
+        <button class="ghost" id="btn-clear-jobs">Clear cached jobs</button>
+      </div>
+      <div id="ai-test-result"></div>
+    </div>
+  </section>
+
+</main>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <button class="modal-close" id="modal-close">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

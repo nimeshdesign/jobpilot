@@ -1,0 +1,27 @@
+# ---- personal data: never publish -------------------------------------
+# Your resume, generated documents, screenshots of filled-in forms, the
+# browser profile (logged-in sessions and cookies) and the database holding
+# your profile, applications and notes all live here.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# API keys
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

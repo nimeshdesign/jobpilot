@@ -1,0 +1,31 @@
+# --- core web app ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+sqlalchemy==2.0.36
+pydantic==2.10.4
+httpx==0.28.1
+python-dotenv==1.0.1
+
+# --- resume parsing ---
+pdfplumber==0.11.4
+python-docx==1.1.2
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# --- document generation ---
+reportlab==4.2.5
+
+# --- application form autofill ---
+playwright==1.49.1
+
+# ---------------------------------------------------------------------------
+# AI is entirely optional. Nothing above depends on it, and no vendor SDK is
+# needed for the free options:
+#
+#   Ollama (local)                  plain HTTP, already covered by httpx
+#   Groq / OpenRouter / LM Studio   plain HTTP, already covered by httpx
+#
+# Only the Claude backend needs an SDK. Install it just for that:
+#     pip install -r requirements-anthropic.txt
+# ---------------------------------------------------------------------------

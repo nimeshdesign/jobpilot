@@ -357,7 +357,7 @@ class FetchRequest(BaseModel):
     rescore: bool = True
 
 
-async def _fetch_task(payload: FetchRequest) -> None:
+async def _fetch_task(payload: FetchRequest) -> list[str]:
     from ..db import SessionLocal
 
     with SessionLocal() as db:
@@ -400,11 +400,18 @@ async def _fetch_task(payload: FetchRequest) -> None:
             except Exception:  # noqa: BLE001
                 log.exception("could not record the failed run")
 
+        return list(run.messages or [])
+
 
 @router.post("/jobs/fetch")
 async def fetch_jobs(
     payload: FetchRequest, background: BackgroundTasks, db: Session = Depends(get_db)
 ) -> dict:
+    if SERVERLESS:
+        # A serverless function is frozen as soon as the response is sent, so a
+        # background task never runs. Fetch inside the request instead.
+        messages = await _fetch_task(payload)
+        return {"ok": True, "done": True, "messages": messages}
     background.add_task(_fetch_task, payload)
     return {"ok": True, "message": "Fetching in the background — watch the Activity panel."}
 

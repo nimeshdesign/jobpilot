@@ -11,7 +11,7 @@ from typing import Any, Callable, Coroutine
 
 import httpx
 
-from ..config import USER_AGENT
+from ..config import SERVERLESS, USER_AGENT
 from .base import JobPost, parse_date
 
 log = logging.getLogger("jobpilot.sources")
@@ -276,8 +276,12 @@ async def fetch_all(keys: list[str], opts: dict | None = None) -> tuple[list[Job
     limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
+    # A hosted fetch runs inside one request with a hard time limit; one slow
+    # board must not stall it long enough to take every other source down too.
+    timeout = httpx.Timeout(20.0, connect=8.0) if SERVERLESS else httpx.Timeout(45.0, connect=15.0)
+
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(45.0, connect=15.0), headers=headers,
+        timeout=timeout, headers=headers,
         follow_redirects=True, limits=limits,
     ) as client:
         results = await asyncio.gather(

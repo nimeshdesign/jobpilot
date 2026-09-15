@@ -153,6 +153,11 @@ async function loadStatus() {
     <div class="stat ${kind}"><div class="num">${esc(num)}</div>
     <div class="label">${esc(label)}</div></div>`).join('');
 
+  hosted = Boolean(status.hosted);
+  if (hosted) {
+    $('.tagline').textContent = 'Hosted copy · password-protected · form autofill runs on your own machine';
+  }
+
   $('#topbar-status').innerHTML = [
     status.llm.available
       ? `<span class="pill ${status.llm.local ? 'good' : 'accent'}" title="${esc(status.llm.label)}">`
@@ -160,7 +165,11 @@ async function loadStatus() {
       : '<span class="pill warn">AI off — rule-based tailoring</span>',
     status.playwright.available
       ? '<span class="pill good">browser ready</span>'
-      : '<span class="pill bad">Playwright missing</span>',
+      : hosted
+        // Expected, not an error: a serverless function cannot run a browser.
+        ? '<span class="pill" title="Form autofill needs a real browser, which cannot run on '
+          + 'Vercel. Use your local copy for Start applying.">autofill: local only</span>'
+        : '<span class="pill bad">Playwright missing</span>',
     status.default_resume
       ? `<span class="pill accent">${esc(status.default_resume.label)}</span>`
       : '<span class="pill bad">no resume</span>',
@@ -220,19 +229,32 @@ function renderSystem(status) {
     <dt>Browser automation</dt><dd>${status.playwright.available
       ? 'Playwright ready' : esc(status.playwright.message)}</dd>
     <dt>Applied in last 24h</dt><dd>${status.applied_last_24h} of ${status.daily_limit}</dd>
-    <dt>Data location</dt><dd><code>jobpilot/data/</code> — SQLite + your generated documents</dd>
+    <dt>Data location</dt><dd>${status.hosted
+      ? 'Hosted Postgres database — resumes and documents are stored in it'
+      : '<code>jobpilot/data/</code> — SQLite + your generated documents'}</dd>
   </dl>`;
 }
 
 /* ----------------------------------------------------------- pipeline btns */
+// Set from /status. The hosted copy fetches inside the request, not in the background.
+let hosted = false;
+
 $('#btn-fetch').onclick = async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   try {
     const query = $('#fetch-query').value.trim();
-    await api('/jobs/fetch', { method: 'POST', body: { query: query || null, rescore: true } });
-    toast('Fetching jobs in the background…', 'ok');
-    setTimeout(loadRuns, 1500);
+    if (hosted) toast('Fetching jobs — this can take a minute…');
+    const result = await api('/jobs/fetch', { method: 'POST', body: { query: query || null, rescore: true } });
+    if (result.done) {
+      const summary = (result.messages || []).slice(-2)
+        .map((m) => m.replace(/^\d\d:\d\d:\d\d\s+/, '')).join(' · ');
+      toast(summary || 'Fetch finished', summary.startsWith('Failed') ? 'err' : 'ok');
+      loadRuns(); loadStatus();
+    } else {
+      toast('Fetching jobs in the background…', 'ok');
+      setTimeout(loadRuns, 1500);
+    }
   } catch (err) { toast(err.message, 'err'); }
   btn.disabled = false;
 };

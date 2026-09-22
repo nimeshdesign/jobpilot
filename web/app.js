@@ -156,6 +156,11 @@ async function loadStatus() {
   hosted = Boolean(status.hosted);
   if (hosted) {
     $('.tagline').textContent = 'Hosted copy · password-protected · form autofill runs on your own machine';
+    // Applying needs a real browser. Say so up front instead of letting the
+    // button look available and fail with an error.
+    $('#apply-local-note').hidden = false;
+    $('#run-auto-submit').closest('label').hidden = true;
+    $('#btn-apply').title = 'Runs on your own machine — a hosted instance has no browser';
   }
 
   $('#topbar-status').innerHTML = [
@@ -185,7 +190,7 @@ function renderWorker(worker) {
   pill.className = `pill ${worker.running ? 'accent' : ''}`;
 
   $('#btn-stop').hidden = !worker.running;
-  $('#btn-apply').disabled = worker.running;
+  $('#btn-apply').disabled = worker.running || hosted;
 
   const pct = worker.total ? Math.round((worker.done / worker.total) * 100) : 0;
   $('#worker-progress').style.width = `${pct}%`;
@@ -275,6 +280,11 @@ $('#btn-queue').onclick = async (e) => {
 };
 
 $('#btn-apply').onclick = async (e) => {
+  if (hosted) {
+    toast('Form filling runs on your own machine — queue matches here, then apply locally.');
+    return;
+  }
+
   const autoSubmit = $('#run-auto-submit').checked;
   if (autoSubmit && !confirm(
     'Auto-submit is ON.\n\nJobPilot will submit each application without showing it to you '

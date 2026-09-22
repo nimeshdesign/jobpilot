@@ -80,6 +80,12 @@
               <button class="primary" id="btn-apply">Start applying</button>
               <button class="ghost" id="btn-stop" hidden>Stop</button>
             </div>
+            <p class="hint" id="apply-local-note" hidden>
+              Form filling runs on your own machine — a hosted instance has no browser.
+              Queue matches here, then run JobPilot locally and press Start applying there.
+              Point your local <code>.env</code> at the same <code>DATABASE_URL</code> and it
+              sees everything queued here.
+            </p>
           </div>
         </div>
       </div>

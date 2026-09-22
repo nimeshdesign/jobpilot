@@ -46,8 +46,11 @@ def call(path, method="GET", body=None, cookie=None, expect_error=True):
 print("=== refuses to run hosted without a password ===")
 env = {**os.environ, "JOBPILOT_SERVERLESS": "1", "JOBPILOT_DATA_DIR": TDATA,
        "JOBPILOT_PORT": str(PORT)}
-env.pop("JOBPILOT_PASSWORD", None)
-env.pop("JOBPILOT_SECRET_KEY", None)
+# Empty, not absent: config.py also reads the developer's own .env, and
+# load_dotenv never overwrites a variable that is already set. Popping these
+# would let a real password leak in and this check would test nothing.
+env["JOBPILOT_PASSWORD"] = ""
+env["JOBPILOT_SECRET_KEY"] = ""
 p = subprocess.run([PY, "-m", "app.main"], cwd=str(ROOT), env=env,
                    capture_output=True, text=True, timeout=90,
                    encoding="utf-8", errors="replace")

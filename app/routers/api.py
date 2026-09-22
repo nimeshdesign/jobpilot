@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -377,7 +378,16 @@ async def _fetch_task(payload: FetchRequest) -> list[str]:
             if payload.rescore:
                 resume = pipeline.default_resume(db)
                 if resume:
-                    scored = pipeline.rescore(db, profile, resume)
+                    if not SERVERLESS:
+                        scored = pipeline.rescore(db, profile, resume)
+                    elif result["touched"]:
+                        # Hosted: score what this fetch changed. Rescoring every
+                        # stored job needs far more time than one request has.
+                        scored = pipeline.rescore(
+                            db, profile, resume, job_ids=result["touched"]
+                        )
+                    else:
+                        scored = pipeline.rescore(db, profile, resume, only_new=True)
                     pipeline.append_message(
                         db, run,
                         f"Scored {scored['scored']} jobs, "
@@ -852,7 +862,27 @@ def download(application_id: int, kind: str, db: Session = Depends(get_db)):
 
 @router.get("/runs")
 def list_runs(limit: int = 10, db: Session = Depends(get_db)) -> list[dict]:
-    runs = db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(limit))
+    runs = list(db.scalars(select(RunLog).order_by(RunLog.started_at.desc()).limit(limit)))
+
+    # A killed run can never finish its own row. Left alone it says "running"
+    # for ever, which reads as "still working" when nothing is working.
+    # Stored timestamps come back without a timezone (both SQLite and Postgres
+    # hold naive DateTime here), so compare like with like.
+    cutoff = utcnow().replace(tzinfo=None) - timedelta(minutes=10)
+    abandoned = [
+        run for run in runs
+        if run.status == "running"
+        and run.started_at
+        and run.started_at.replace(tzinfo=None) < cutoff
+    ]
+    for run in abandoned:
+        run.status = "failed"
+        run.finished_at = utcnow()
+        run.messages = (run.messages or []) + [
+            "Stopped without finishing — the host's time limit was probably reached."
+        ]
+    if abandoned:
+        db.commit()
     return [{
         "id": run.id,
         "kind": run.kind,

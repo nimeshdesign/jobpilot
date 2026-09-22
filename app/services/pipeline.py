@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from ..config import SERVERLESS
 from ..models import Application, Job, Match, Profile, Resume, RunLog, utcnow
 from ..sources import providers
 from ..sources.base import JobPost
@@ -16,15 +18,59 @@ from .skills import extract_skills
 
 log = logging.getLogger("jobpilot.pipeline")
 
+# How long a hosted fetch may spend writing postings before it stops and asks
+# to be run again. A serverless request is killed at a hard limit, and a kill
+# loses the whole batch, so stopping early on purpose stores strictly more.
+WRITE_BUDGET_SECONDS = 30.0
+
 
 # --------------------------------------------------------------------------- #
 # 1. fetch
 # --------------------------------------------------------------------------- #
-def _upsert_job(db: Session, post: JobPost) -> tuple[Job, bool]:
-    existing = db.scalar(
-        select(Job).where(Job.source == post.source, Job.external_id == post.external_id)
+def _existing_jobs(db: Session, posts: list[JobPost]) -> dict[tuple[str, str], Job]:
+    """Every stored job these postings might update, in one query per source.
+
+    A fetch carries thousands of postings and nearly all of them already exist.
+    Looking each one up on its own is thousands of round trips, which a hosted
+    database on the other side of a network cannot serve inside one request.
+    """
+    wanted: dict[str, set[str]] = {}
+    for post in posts:
+        if post.external_id:
+            wanted.setdefault(post.source, set()).add(post.external_id)
+
+    found: dict[tuple[str, str], Job] = {}
+    for source, ids in wanted.items():
+        id_list = list(ids)
+        for start in range(0, len(id_list), 500):
+            chunk = id_list[start:start + 500]
+            for job in db.scalars(
+                select(Job).where(Job.source == source, Job.external_id.in_(chunk))
+            ):
+                found[(job.source, job.external_id)] = job
+    return found
+
+
+def _is_unchanged(existing: Job | None, post: JobPost) -> bool:
+    """Would storing this posting write the same row back?
+
+    Boards republish the same advert on every fetch. Rewriting thousands of
+    identical rows — and re-running the visa and skill analysis to do it — was
+    most of the cost of a fetch, and on a hosted instance it ran out of time.
+    """
+    if existing is None:
+        return False
+    return (
+        existing.title == post.title
+        and existing.company == post.company
+        and existing.location == post.location
+        and existing.salary == post.salary
+        and existing.url == post.url
+        and existing.description == (post.description or "")
     )
 
+
+def _upsert_job(db: Session, post: JobPost, existing: Job | None) -> tuple[Job, bool]:
     status, score, evidence = visa.analyze(
         post.description, post.title, post.tags, explicit=post.visa_flag
     )
@@ -106,13 +152,20 @@ def dedupe_across_sources(db: Session) -> int:
     from .ats.autofill import detect_ats
 
     applied_job_ids = set(db.scalars(select(Application.job_id)))
-    groups: dict[tuple[str, str], list[Job]] = {}
-    for job in db.scalars(select(Job).where(Job.hidden.is_(False))):
-        key = _dedupe_key(job)
-        if key:
-            groups.setdefault(key, []).append(job)
+    # Four columns, not whole rows: every job carries its full description, and
+    # loading thousands of those to compare company and title reads megabytes
+    # out of the database for nothing.
+    rows = db.execute(
+        select(Job.id, Job.company, Job.title, Job.apply_url).where(Job.hidden.is_(False))
+    ).all()
 
-    hidden = 0
+    groups: dict[tuple[str, str], list[tuple]] = {}
+    for row in rows:
+        key = _dedupe_key(row)
+        if key:
+            groups.setdefault(key, []).append(row)
+
+    hide_ids: list[int] = []
     for jobs in groups.values():
         if len(jobs) < 2:
             continue
@@ -124,12 +177,15 @@ def dedupe_across_sources(db: Session) -> int:
                 continue
             if job.id in applied_job_ids:
                 continue  # never hide something already queued or applied
-            job.hidden = True
-            hidden += 1
+            hide_ids.append(job.id)
 
-    if hidden:
+    for start in range(0, len(hide_ids), 1000):
+        db.execute(
+            update(Job).where(Job.id.in_(hide_ids[start:start + 1000])).values(hidden=True)
+        )
+    if hide_ids:
         db.commit()
-    return hidden
+    return len(hide_ids)
 
 
 async def fetch_jobs(db: Session, profile: Profile, opts: dict | None = None) -> dict:
@@ -146,8 +202,13 @@ async def fetch_jobs(db: Session, profile: Profile, opts: dict | None = None) ->
 
     posts, notes = await providers.fetch_all(keys, opts)
 
-    created = updated = skipped = failed = 0
+    stored = _existing_jobs(db, posts)
+
+    created = updated = unchanged = skipped = failed = 0
+    touched: list[int] = []
     seen: set[tuple[str, str]] = set()
+    deadline = time.monotonic() + WRITE_BUDGET_SECONDS if SERVERLESS else None
+    ran_out = False
 
     for post in posts:
         if not post.title or not post.external_id:
@@ -161,13 +222,25 @@ async def fetch_jobs(db: Session, profile: Profile, opts: dict | None = None) ->
             continue
         seen.add(key)
 
+        existing = stored.get(key)
+        if _is_unchanged(existing, post):
+            unchanged += 1
+            continue
+
+        if deadline is not None and time.monotonic() > deadline:
+            ran_out = True
+            break
+
         try:
             # A savepoint per posting: if one row is malformed we lose that row,
             # not the hundreds already staged in this batch.
             with db.begin_nested():
-                _, is_new = _upsert_job(db, post)
+                job, is_new = _upsert_job(db, post, existing)
+            if is_new:
+                stored[key] = job
             created += int(is_new)
             updated += int(not is_new)
+            touched.append(job.id)
         except Exception as exc:  # noqa: BLE001 - one bad posting must not lose the batch
             failed += 1
             log.warning("skipped %s/%s: %s", post.source, post.external_id, exc)
@@ -181,15 +254,24 @@ async def fetch_jobs(db: Session, profile: Profile, opts: dict | None = None) ->
         )
     if skipped:
         notes.append(f"Skipped {skipped} duplicate or incomplete posting(s)")
+    if unchanged:
+        notes.append(f"{unchanged} posting(s) already stored, unchanged")
     if failed:
         notes.append(f"{failed} posting(s) could not be stored — see the server log")
+    if ran_out:
+        notes.append(
+            "Ran out of time storing postings — press Fetch again to carry on from here"
+        )
 
     return {
         "fetched": len(posts),
         "new": created,
         "updated": updated,
+        "unchanged": unchanged,
         "skipped": skipped,
         "failed": failed,
+        "partial": ran_out,
+        "touched": touched,
         "sources": notes,
     }
 
